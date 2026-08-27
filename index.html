@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Resonant Curve — k-eis</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+
+:root {
+  /* Moog / アナログシンセを意識：ウォルナット材×クリームパネル×オレンジ×真鍮 */
+  --bg: #3a2a1c;
+  --ink: #f0e6d2;
+  --line: #5a4530;
+  --line-strong: #7a5f3f;
+  --accent: #d4622a;   /* Moogロゴを思わせるオレンジ */
+  --accent2: #c9a227;  /* 真鍮ノブのようなゴールド */
+  --canvas-check-a: #322415;
+  --canvas-check-b: #3a2a1c;
+  --mono: 'Courier New', monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+}
+
+html, body { background: var(--bg); color: var(--ink); font-family: var(--sans); min-height: 100vh; }
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 40px 32px 80px; }
+
+/* ── ヘッダー ── */
+header {
+  border-bottom: 1px solid var(--line-strong);
+  padding-bottom: 22px;
+  margin-bottom: 32px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+.filter-tag { font: 600 10px/1 var(--mono); color: var(--accent); letter-spacing: 0.16em; margin-bottom: 10px; }
+h1 { font: 300 32px/1.1 var(--sans); letter-spacing: -0.01em; }
+h1 .jp { font-size: 15px; color: #b8a685; font-weight: 400; margin-left: 10px; }
+.tagline { font: 400 12px/1.6 var(--sans); color: #b8a685; margin-top: 6px; }
+.version { font: 400 9px/1 var(--mono); color: #8a7758; letter-spacing: 0.1em; text-align: right; }
+
+/* ── メインレイアウト ── */
+.stage { display: grid; grid-template-columns: 1fr 300px; gap: 0; border: 1px solid var(--line-strong); }
+
+.canvas-area {
+  position: relative;
+  background:
+    linear-gradient(45deg, var(--canvas-check-a) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--canvas-check-a) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--canvas-check-a) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--canvas-check-a) 75%);
+  background-color: var(--canvas-check-b);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+  border-right: 1px solid var(--line-strong);
+  min-height: 480px;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+
+#dropZone {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  cursor: pointer; transition: background 0.15s;
+}
+#dropZone.drag-over { background: rgba(212,98,42,0.08); }
+#dropZone .icon { width: 40px; height: 40px; border: 1.5px solid var(--line-strong); border-radius: 50%; position: relative; }
+#dropZone .icon::before { content:''; position:absolute; left:50%; top:50%; width:14px; height:14px; border-radius:50%; background: var(--line-strong); transform: translate(-50%,-50%); opacity:0.5; }
+#dropZone .label-main { font: 500 12px/1 var(--sans); color: var(--ink); text-align: center; }
+#dropZone .label-sub { font: 400 9px/1 var(--mono); color: #8a7758; letter-spacing: 0.08em; }
+#fileInput { display: none; }
+
+canvas#outputCanvas { max-width: 100%; max-height: 640px; display: none; }
+
+.canvas-badge {
+  position: absolute; top: 14px; left: 14px;
+  font: 500 9px/1 var(--mono); color: var(--ink);
+  background: rgba(0,0,0,0.35); padding: 4px 8px; border: 1px solid var(--line);
+  letter-spacing: 0.08em; display: none;
+}
+
+/* ── コントロールパネル ── */
+.controls { background: var(--bg); padding: 22px 20px; display: flex; flex-direction: column; gap: 0; }
+.ctrl-group { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.ctrl-group:first-child { padding-top: 0; }
+.ctrl-label { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.ctrl-label .name { font: 500 10px/1 var(--sans); color: var(--ink); letter-spacing: 0.02em; }
+.ctrl-label .name .jp-small { font-size: 9px; color: #8a7758; margin-left: 4px; }
+.ctrl-label .val { font: 500 10px/1 var(--mono); color: var(--accent); }
+
+input[type="range"] { -webkit-appearance: none; width: 100%; height: 3px; background: var(--line-strong); outline: none; cursor: pointer; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent2); cursor: pointer; transition: transform 0.1s; box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--accent2); }
+input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
+input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--accent2); border: none; cursor: pointer; }
+
+.checkbox-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.checkbox-row label { font: 500 10px/1 var(--sans); color: var(--ink); cursor: pointer; }
+.checkbox-row input { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
+
+/* ── Patch グリッド ── */
+.profile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.profile-btn { border: 1px solid var(--line-strong); padding: 10px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 3px; transition: all 0.12s; }
+.profile-btn:hover { border-color: var(--accent); }
+.profile-btn.active { background: var(--accent); border-color: var(--accent); }
+.profile-btn.active .profile-name, .profile-btn.active .profile-desc { color: #2a1c10; }
+.profile-name { font: 500 11px/1 var(--sans); color: var(--ink); }
+.profile-desc { font: 400 9px/1 var(--sans); color: #8a7758; }
+
+.action-buttons { display: flex; gap: 8px; }
+.btn { flex: 1; padding: 12px; border: 1px solid var(--accent); background: var(--accent); color: #2a1c10; font: 600 11px/1 var(--sans); letter-spacing: 0.04em; cursor: pointer; transition: opacity 0.12s; }
+.btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.btn.secondary { background: transparent; color: var(--ink); border-color: var(--line-strong); }
+
+/* ── フッターリンク ── */
+.footer-links { display: flex; gap: 8px; margin-top: 16px; }
+.footer-links a { flex: 1; padding: 11px 14px; border: 1px solid var(--line-strong); background: transparent; color: var(--ink); font: 500 10px/1 var(--sans); letter-spacing: 0.03em; text-align: center; text-decoration: none; cursor: pointer; transition: all 0.12s; }
+.footer-links a:hover { border-color: var(--accent); color: var(--accent); }
+
+@media (max-width: 860px) {
+  .wrap { padding: 20px 16px 50px; }
+  header { flex-direction: column; align-items: flex-start; gap: 10px; padding-bottom: 16px; margin-bottom: 20px; }
+  h1 { font-size: 24px; }
+  h1 .jp { display: block; margin-left: 0; margin-top: 4px; font-size: 13px; }
+  .tagline { font-size: 11px; }
+  .version { text-align: left; }
+  .stage { grid-template-columns: 1fr; border: none; }
+  .canvas-area { border: 1px solid var(--line-strong); border-bottom: none; min-height: 220px; position: sticky; top: 0; z-index: 20; background: var(--bg); }
+  #dropZone .label-main { font-size: 13px; text-align: center; padding: 0 16px; }
+  canvas#outputCanvas { max-height: 42vh; }
+  .controls { border: 1px solid var(--line-strong); border-top: none; padding: 18px 16px; }
+  .ctrl-group { padding: 18px 0; }
+  input[type="range"] { height: 4px; margin: 8px 0; }
+  input[type="range"]::-webkit-slider-thumb { width: 22px; height: 22px; }
+  input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; }
+  .ctrl-label .name { font-size: 11.5px; }
+  .ctrl-label .val { font-size: 12px; }
+  .profile-btn { padding: 13px 14px; }
+  .profile-name { font-size: 13px; }
+  .profile-desc { font-size: 9.5px; }
+  .btn { padding: 16px; font-size: 12px; }
+  .action-buttons { gap: 10px; margin-top: 8px; }
+  .footer-links { flex-direction: column; gap: 8px; }
+  .footer-links a { padding: 14px; font-size: 11px; }
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="filter-tag">k-eis DESIGN FILTER 004</div>
+      <h1>Resonant Curve <span class="jp">共鳴する輪郭</span></h1>
+      <div class="tagline">Where blur meets resonance, and a pattern begins to sing.</div>
+      <div class="tagline" style="margin-top:2px; opacity:0.85;">ぼかしと共鳴が出会うとき、模様は歌いはじめる。</div>
+    </div>
+    <div class="version">© 2026 k-eis studio</div>
+  </header>
+
+  <div class="stage">
+    <div class="canvas-area">
+      <div id="dropZone">
+        <div class="icon"></div>
+        <div class="label-main">Drop image, or click to select<br><span style="font-size:10px; opacity:0.6;">画像をドロップ、またはクリックして選択</span></div>
+        <div class="label-sub">PNG / JPEG SUPPORTED</div>
+        <input type="file" id="fileInput" accept="image/*">
+      </div>
+      <div class="canvas-badge" id="canvasBadge">PREVIEW</div>
+      <canvas id="outputCanvas"></canvas>
+    </div>
+
+    <div class="controls">
+      <div class="ctrl-group">
+        <div class="ctrl-label">
+          <span class="name">CUTOFF <span class="jp-small">帯域の基準点</span></span>
+          <span class="val" id="cutoffVal">50%</span>
+        </div>
+        <input type="range" id="cutoff" min="0" max="100" value="50">
+      </div>
+
+      <div class="ctrl-group">
+        <div class="ctrl-label">
+          <span class="name">RESONANCE <span class="jp-small">共鳴・自己発振</span></span>
+          <span class="val" id="resonanceVal">30%</span>
+        </div>
+        <input type="range" id="resonance" min="0" max="100" value="30">
+      </div>
+
+      <div class="ctrl-group">
+        <div class="ctrl-label">
+          <span class="name">WAVEFORM <span class="jp-small">粒子の波形</span></span>
+          <span class="val" id="waveformVal">30%</span>
+        </div>
+        <input type="range" id="waveform" min="0" max="100" value="30">
+      </div>
+
+      <div class="ctrl-group">
+        <div class="ctrl-label">
+          <span class="name">LFO <span class="jp-small">緩やかな揺らぎ</span></span>
+          <span class="val" id="lfoVal">20%</span>
+        </div>
+        <input type="range" id="lfo" min="0" max="100" value="20">
+      </div>
+
+      <div class="ctrl-group">
+        <div class="ctrl-label">
+          <span class="name">ENVELOPE <span class="jp-small">中心→端の包絡</span></span>
+          <span class="val" id="envelopeVal">30%</span>
+        </div>
+        <input type="range" id="envelope" min="0" max="100" value="30">
+      </div>
+
+      <div class="ctrl-group">
+        <div class="checkbox-row">
+          <input type="checkbox" id="monochrome">
+          <label for="monochrome">MONOCHROME <span style="opacity:0.6;font-weight:400;">/ モノクロ変換</span></label>
+        </div>
+      </div>
+
+      <div class="ctrl-group">
+        <div class="ctrl-label"><span class="name">PATCH <span class="jp-small">音色を選ぶ</span></span></div>
+        <div class="profile-grid">
+          <div class="profile-btn active" data-patch="init">
+            <span class="profile-name">Init</span>
+            <span class="profile-desc">初期化・控えめ</span>
+          </div>
+          <div class="profile-btn" data-patch="pad">
+            <span class="profile-name">Pad</span>
+            <span class="profile-desc">滑らかで広がる</span>
+          </div>
+          <div class="profile-btn" data-patch="acid">
+            <span class="profile-name">Acid</span>
+            <span class="profile-desc">うねる自己発振</span>
+          </div>
+          <div class="profile-btn" data-patch="drone">
+            <span class="profile-name">Drone</span>
+            <span class="profile-desc">持続的で瞑想的</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ctrl-group" style="border-bottom:none;">
+        <div class="action-buttons">
+          <button class="btn" id="downloadBtn" disabled>SAVE AS PNG</button>
+          <button class="btn secondary" id="resetBtn" disabled>RESET IMAGE</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer-links">
+    <a href="https://keis01.substack.com/p/k-eis-design-filter-000" target="_blank" rel="noopener">PHILOSOPHY • USAGE • LICENSE</a>
+    <a href="https://keis01.substack.com/s/k-eis-design-filter" target="_blank" rel="noopener">ALL FILTERS</a>
+  </div>
+</div>
+
+<script src="resonant-curve.js"></script>
+</body>
+</html>
