@@ -5,6 +5,7 @@
 // 03 WAVEFORM   → ウェーブシェイピング。階調をSカーブ（サイン波）⇄ポスタリゼーション（矩形波）で変形
 // 04 LFO        → cloudNoiseベースの緩やかな空間的揺らぎ
 // 05 ENVELOPE   → 画面中心→端に向かって効果が強まる空間的ADSR
+// 06 BITCRUSH   → 量子化前にディザを足してから階調を落とす、ローファイサンプラーのビット深度
 // （2段階プレビュー処理・ノイズ関数・iOS保存はMemory Grain a520 / Clair de Luneの既存資産を移植）
 
 const dropZone = document.getElementById('dropZone');
@@ -18,6 +19,7 @@ const resonanceSlider = document.getElementById('resonance');
 const waveformSlider = document.getElementById('waveform');
 const lfoSlider = document.getElementById('lfo');
 const envelopeSlider = document.getElementById('envelope');
+const bitcrushSlider = document.getElementById('bitcrush');
 const monochromeCheckbox = document.getElementById('monochrome');
 
 const cutoffVal = document.getElementById('cutoffVal');
@@ -25,6 +27,7 @@ const resonanceVal = document.getElementById('resonanceVal');
 const waveformVal = document.getElementById('waveformVal');
 const lfoVal = document.getElementById('lfoVal');
 const envelopeVal = document.getElementById('envelopeVal');
+const bitcrushVal = document.getElementById('bitcrushVal');
 
 const downloadBtn = document.getElementById('downloadBtn');
 const resetBtn = document.getElementById('resetBtn');
@@ -177,6 +180,7 @@ function applyResonantCurve(preview) {
   const waveform = parseInt(waveformSlider.value) / 100;
   const lfo = parseInt(lfoSlider.value) / 100;
   const envelope = parseInt(envelopeSlider.value) / 100;
+  const bitcrush = parseInt(bitcrushSlider.value) / 100;
   const mono = monochromeCheckbox.checked;
 
   const src = useData.data;
@@ -280,6 +284,24 @@ function applyResonantCurve(preview) {
     out = next;
   }
 
+  // ── BITCRUSH：量子化前に小さなディザを足してから階調を落とす（ローファイサンプラーのビットクラッシュ）
+  if (bitcrush > 0.01) {
+    const levels = Math.max(4, Math.round(255 - bitcrush * 251)); // 大きいほど粗い量子化幅
+    const step = 255 / levels;
+    const next = new Uint8ClampedArray(out.length);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y*w+x)*4;
+        const dither = (pseudoRandom2D(x + 8000, y + 8000) - 0.5) * step * 0.9;
+        next[i]   = Math.round((out[i]   + dither) / step) * step;
+        next[i+1] = Math.round((out[i+1] + dither) / step) * step;
+        next[i+2] = Math.round((out[i+2] + dither) / step) * step;
+        next[i+3] = out[i+3];
+      }
+    }
+    out = next;
+  }
+
   if (mono) {
     const mono2 = new Uint8ClampedArray(out.length);
     for (let i = 0; i < out.length; i += 4) {
@@ -308,7 +330,7 @@ function applyResonantCurve(preview) {
 }
 
 // ── UIイベント
-const allSliders = [cutoffSlider, resonanceSlider, waveformSlider, lfoSlider, envelopeSlider];
+const allSliders = [cutoffSlider, resonanceSlider, waveformSlider, lfoSlider, envelopeSlider, bitcrushSlider];
 
 allSliders.forEach(slider => {
   slider.addEventListener('pointerdown', () => { isDragging = true; });
@@ -332,14 +354,15 @@ resonanceSlider.addEventListener('input', () => { resonanceVal.textContent = res
 waveformSlider.addEventListener('input', () => { waveformVal.textContent = waveformSlider.value + '%'; clearPatchActive(); requestApply(); });
 lfoSlider.addEventListener('input', () => { lfoVal.textContent = lfoSlider.value + '%'; clearPatchActive(); requestApply(); });
 envelopeSlider.addEventListener('input', () => { envelopeVal.textContent = envelopeSlider.value + '%'; clearPatchActive(); requestApply(); });
+bitcrushSlider.addEventListener('input', () => { bitcrushVal.textContent = bitcrushSlider.value + '%'; clearPatchActive(); requestApply(); });
 monochromeCheckbox.addEventListener('change', () => applyResonantCurve());
 
 // ── Patch プリセット
 const PATCH_PROFILES = {
-  init:  { cutoff: 50, resonance: 15, waveform: 20, lfo: 10, envelope: 15 }, // 初期化・控えめ
-  pad:   { cutoff: 65, resonance: 25, waveform: 10, lfo: 35, envelope: 25 }, // 滑らかで広がる
-  acid:  { cutoff: 35, resonance: 80, waveform: 70, lfo: 15, envelope: 40 }, // うねる自己発振
-  drone: { cutoff: 55, resonance: 45, waveform: 15, lfo: 70, envelope: 60 }, // 持続的で瞑想的
+  init:  { cutoff: 50, resonance: 15, waveform: 20, lfo: 10, envelope: 15, bitcrush: 0  }, // 初期化・控えめ
+  pad:   { cutoff: 65, resonance: 25, waveform: 10, lfo: 35, envelope: 25, bitcrush: 0  }, // 滑らかで広がる
+  acid:  { cutoff: 35, resonance: 80, waveform: 70, lfo: 15, envelope: 40, bitcrush: 35 }, // うねる自己発振
+  drone: { cutoff: 55, resonance: 45, waveform: 15, lfo: 70, envelope: 60, bitcrush: 20 }, // 持続的で瞑想的
 };
 
 patchBtns.forEach(btn => {
@@ -351,6 +374,7 @@ patchBtns.forEach(btn => {
     waveformSlider.value = p.waveform; waveformVal.textContent = p.waveform + '%';
     lfoSlider.value = p.lfo; lfoVal.textContent = p.lfo + '%';
     envelopeSlider.value = p.envelope; envelopeVal.textContent = p.envelope + '%';
+    bitcrushSlider.value = p.bitcrush; bitcrushVal.textContent = p.bitcrush + '%';
     patchBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     requestApply();

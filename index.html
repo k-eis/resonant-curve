@@ -212,6 +212,14 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
       </div>
 
       <div class="ctrl-group">
+        <div class="ctrl-label">
+          <span class="name">BITCRUSH <span class="jp-small">ビット深度を落とす</span></span>
+          <span class="val" id="bitcrushVal">0%</span>
+        </div>
+        <input type="range" id="bitcrush" min="0" max="100" value="0">
+      </div>
+
+      <div class="ctrl-group">
         <div class="checkbox-row">
           <input type="checkbox" id="monochrome">
           <label for="monochrome">MONOCHROME <span style="opacity:0.6;font-weight:400;">/ モノクロ変換</span></label>
