@@ -2,7 +2,7 @@
 // シンセサイザーのサブトラクティブ・フィルター（カットオフ×レゾナンス）を画像処理に翻訳する:
 // 01 CUTOFF     → ローパスフィルターの基準スケール（ぼかし半径）
 // 02 RESONANCE  → CUTOFFが決めるスケール帯だけをバンドパス的に強調（DoG＋フィードバックで自己発振を再現）
-// 03 WAVEFORM   → 粒子の質感をSine（滑らか）⇄Square（二値化）で変化
+// 03 WAVEFORM   → ウェーブシェイピング。階調をSカーブ（サイン波）⇄ポスタリゼーション（矩形波）で変形
 // 04 LFO        → cloudNoiseベースの緩やかな空間的揺らぎ
 // 05 ENVELOPE   → 画面中心→端に向かって効果が強まる空間的ADSR
 // （2段階プレビュー処理・ノイズ関数・iOS保存はMemory Grain a520 / Clair de Luneの既存資産を移植）
@@ -236,32 +236,41 @@ function applyResonantCurve(preview) {
 
   let out = boosted;
 
-  // ── WAVEFORM + LFO：粒子の質感（Sine⇄Square）と、緩やかな空間的揺らぎ
-  if (waveform > 0.01 || lfo > 0.01) {
+  // ── WAVEFORM：ウェーブシェイピング（階調の変換）。サイン波的な滑らかなSカーブ ⇄ 矩形波的なポスタリゼーション
+  //    模様を足すのではなく、明暗の変換カーブそのものを変形するので、迷彩や縞にはならない
+  if (waveform > 0.01) {
+    const posterLevels = 3; // 矩形波側の階調数（少ないほどパキッとする）
+    const softK = 3.2; // サイン波側のSカーブの強さ
+    const next = new Uint8ClampedArray(out.length);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y*w+x)*4;
+        const d = Math.sqrt((x-cx)*(x-cx) + (y-cy)*(y-cy)) / maxDist;
+        // ENVELOPE=0のときは全面に均一適用、上げるほど中心は控えめ・端は強めに
+        const effectAmt = Math.max(0, Math.min(1, 1 - envelope * (1 - d) * 0.9));
+
+        for (let c = 0; c < 3; c++) {
+          const t = out[i+c] / 255;
+          const soft = 0.5 + 0.5 * Math.tanh((t - 0.5) * softK * 2);
+          const poster = Math.round(t * posterLevels) / posterLevels;
+          const shaped = soft * (1 - waveform) + poster * waveform;
+          next[i+c] = (t * 255) * (1 - effectAmt) + (shaped * 255) * effectAmt;
+        }
+        next[i+3] = out[i+3];
+      }
+    }
+    out = next;
+  }
+
+  // ── LFO：cloudNoiseベースの緩やかな空間的揺らぎ
+  if (lfo > 0.01) {
     const next = new Uint8ClampedArray(out.length);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = (y*w+x)*4;
         const envMult = envMap[y*w+x];
-        let delta = 0;
-
-        if (waveform > 0.01) {
-          // 斜め方向の繰り返し波（本物の波形に近い縞パターン）。迷彩状のブロブを避けるため
-          // ブロック状の2Dノイズではなく、位相ベースのサイン/矩形波を使う。
-          const wavelength = 5; // 細かめにしてグレイン的な質感に留める
-          const angle = 0.6; // 固定の斜め角度
-          const jitter = (pseudoRandom2D(x, y) - 0.5) * 0.5; // 完全な規則性を崩す
-          const phase = ((x * Math.cos(angle) + y * Math.sin(angle)) / wavelength) * Math.PI * 2 + jitter;
-          const sineWave = Math.sin(phase) * 0.5 + 0.5;
-          const squareWave = Math.sin(phase) >= 0 ? 1 : 0;
-          const mixed = sineWave * (1 - waveform) + squareWave * waveform;
-          delta += (mixed - 0.5) * 2 * 16 * waveform * envMult;
-        }
-        if (lfo > 0.01) {
-          const wob = cloudNoise(x, y) - 0.5;
-          delta += wob * 2 * 26 * lfo * envMult;
-        }
-
+        const wob = cloudNoise(x, y) - 0.5;
+        const delta = wob * 2 * 26 * lfo * envMult;
         next[i]   = out[i]   + delta;
         next[i+1] = out[i+1] + delta;
         next[i+2] = out[i+2] + delta;
