@@ -188,19 +188,27 @@ function applyResonantCurve(preview) {
   // ── CUTOFF：ローパスの基準スケール。カットオフが低いほど大きくぼかす（低い周波数しか通さない）
   const baseRadius = (2 + (1 - cutoff) * 42) * Math.max(radiusScale, 0.35);
 
-  // ── ENVELOPE：画面中心→端に向かって効果が強まる空間マスクを先に計算
+  // ── ENVELOPE：画面中心→端に向かって効果が強まる空間マスク。
+  //    綺麗な同心円のままだと不自然なので、Clair de LuneのWOBBLEと同じcloudNoiseで輪郭を崩し、
+  //    smoothstepで滑らかに繋げる（有機的な"揺らぎのある包絡"にする）
   const cx = w / 2, cy = h / 2;
   const maxDist = Math.sqrt(cx*cx + cy*cy);
   const envMap = new Float32Array(w * h);
+  const envCombined = new Float32Array(w * h); // 0(中心寄り)〜1(端寄り)の有機的な素の値。WAVEFORMのブレンドにも共用する
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const d = Math.sqrt((x-cx)*(x-cx) + (y-cy)*(y-cy)) / maxDist; // 0(中心)〜1(端)
-      envMap[y*w+x] = 1 + envelope * d * 2.2; // 中心はほぼ1倍、端は最大3倍強調
+      const smoothD = d * d * (3 - 2 * d); // 滑らかなイージング
+      const organic = cloudNoise(x, y); // 0〜1のなだらかな有機的ノイズ
+      const combined = Math.max(0, Math.min(1, smoothD + (organic - 0.5) * 0.5));
+      envCombined[y*w+x] = combined;
+      envMap[y*w+x] = 1 + envelope * combined * 2.2; // 中心はほぼ1倍、端は最大3倍強調（輪郭は有機的に崩す）
     }
   }
 
   // ── RESONANCE：CUTOFFが決めるスケール帯だけをバンドパス的に強調し、
   //    フィードバックを重ねることで高レゾナンス時に自己発振（リング状の模様）を再現する
+  //    ※ENVELOPEはフィードバックの外側で1回だけ適用する（ループ内で毎回掛けると複利的に増幅し、斑点状に荒れるため）
   let boosted = new Uint8ClampedArray(src);
   if (resonance > 0.01) {
     const iterations = 1 + Math.round(resonance * 2); // 1〜3回のフィードバック
@@ -212,10 +220,9 @@ function applyResonantCurve(preview) {
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const i = (y*w+x)*4;
-          const envMult = envMap[y*w+x];
-          const bandR = (blurNarrow[i]   - blurWide[i])   * gain * envMult;
-          const bandG = (blurNarrow[i+1] - blurWide[i+1]) * gain * envMult;
-          const bandB = (blurNarrow[i+2] - blurWide[i+2]) * gain * envMult;
+          const bandR = (blurNarrow[i]   - blurWide[i])   * gain;
+          const bandG = (blurNarrow[i+1] - blurWide[i+1]) * gain;
+          const bandB = (blurNarrow[i+2] - blurWide[i+2]) * gain;
           next[i]   = boosted[i]   + bandR;
           next[i+1] = boosted[i+1] + bandG;
           next[i+2] = boosted[i+2] + bandB;
@@ -224,6 +231,19 @@ function applyResonantCurve(preview) {
       }
       boosted = next;
     }
+    // フィードバック後にできた差分（＝共鳴で足された成分）だけにENVELOPEを1回だけ適用
+    const withEnv = new Uint8ClampedArray(boosted.length);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y*w+x)*4;
+        const envMult = envMap[y*w+x];
+        withEnv[i]   = src[i]   + (boosted[i]   - src[i])   * envMult;
+        withEnv[i+1] = src[i+1] + (boosted[i+1] - src[i+1]) * envMult;
+        withEnv[i+2] = src[i+2] + (boosted[i+2] - src[i+2]) * envMult;
+        withEnv[i+3] = boosted[i+3];
+      }
+    }
+    boosted = withEnv;
   } else if (cutoff < 0.999) {
     // レゾナンスなしでもCUTOFFは効く：単純なローパス（ブレンド）
     const blurred = boxBlur(boosted, w, h, baseRadius);
@@ -249,9 +269,9 @@ function applyResonantCurve(preview) {
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = (y*w+x)*4;
-        const d = Math.sqrt((x-cx)*(x-cx) + (y-cy)*(y-cy)) / maxDist;
-        // ENVELOPE=0のときは全面に均一適用、上げるほど中心は控えめ・端は強めに
-        const effectAmt = Math.max(0, Math.min(1, 1 - envelope * (1 - d) * 0.9));
+        const combined = envCombined[y*w+x];
+        // ENVELOPE=0のときは全面に均一適用、上げるほど中心は控えめ・端は強めに（RESONANCE/LFOと同じ有機的な形状）
+        const effectAmt = Math.max(0, Math.min(1, 1 - envelope * (1 - combined) * 0.9));
 
         for (let c = 0; c < 3; c++) {
           const t = out[i+c] / 255;
