@@ -191,19 +191,34 @@ function applyResonantCurve(preview) {
   // ── ENVELOPE：画面中心→端に向かって効果が強まる空間マスク。
   //    綺麗な同心円のままだと不自然なので、Clair de LuneのWOBBLEと同じcloudNoiseで輪郭を崩し、
   //    smoothstepで滑らかに繋げる（有機的な"揺らぎのある包絡"にする）
+  //    ※cloudNoiseは全ピクセル計算だと重いので、(サイズ, envelope)が前回と同じならキャッシュを再利用する。
+  //      ENVELOPE=0のときはそもそも効果が無いので、重いノイズ計算自体をスキップする。
   const cx = w / 2, cy = h / 2;
   const maxDist = Math.sqrt(cx*cx + cy*cy);
-  const envMap = new Float32Array(w * h);
-  const envCombined = new Float32Array(w * h); // 0(中心寄り)〜1(端寄り)の有機的な素の値。WAVEFORMのブレンドにも共用する
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const d = Math.sqrt((x-cx)*(x-cx) + (y-cy)*(y-cy)) / maxDist; // 0(中心)〜1(端)
-      const smoothD = d * d * (3 - 2 * d); // 滑らかなイージング
-      const organic = cloudNoise(x, y); // 0〜1のなだらかな有機的ノイズ
-      const combined = Math.max(0, Math.min(1, smoothD + (organic - 0.5) * 0.5));
-      envCombined[y*w+x] = combined;
-      envMap[y*w+x] = 1 + envelope * combined * 2.2; // 中心はほぼ1倍、端は最大3倍強調（輪郭は有機的に崩す）
+  let envMap, envCombined;
+  const envCacheKey = `${w}x${h}:${envelope.toFixed(3)}`;
+  if (applyResonantCurve._envCache && applyResonantCurve._envCache.key === envCacheKey) {
+    envMap = applyResonantCurve._envCache.envMap;
+    envCombined = applyResonantCurve._envCache.envCombined;
+  } else {
+    envMap = new Float32Array(w * h);
+    envCombined = new Float32Array(w * h); // 0(中心寄り)〜1(端寄り)の有機的な素の値。WAVEFORMのブレンドにも共用する
+    if (envelope > 0.01) {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const d = Math.sqrt((x-cx)*(x-cx) + (y-cy)*(y-cy)) / maxDist; // 0(中心)〜1(端)
+          const smoothD = d * d * (3 - 2 * d); // 滑らかなイージング
+          const organic = cloudNoise(x, y); // 0〜1のなだらかな有機的ノイズ
+          const combined = Math.max(0, Math.min(1, smoothD + (organic - 0.5) * 0.5));
+          envCombined[y*w+x] = combined;
+          envMap[y*w+x] = 1 + envelope * combined * 2.2; // 中心はほぼ1倍、端は最大3倍強調（輪郭は有機的に崩す）
+        }
+      }
+    } else {
+      envMap.fill(1); // ENVELOPE=0：効果なしなので1で埋めるだけ（cloudNoise計算は不要）
+      envCombined.fill(0);
     }
+    applyResonantCurve._envCache = { key: envCacheKey, envMap, envCombined };
   }
 
   // ── RESONANCE：CUTOFFが決めるスケール帯だけをバンドパス的に強調し、
