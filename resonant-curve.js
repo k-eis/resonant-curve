@@ -133,34 +133,54 @@ function cloudNoise(x, y) {
 // ── 簡易ボックスブラー（CUTOFF / RESONANCEのDoG生成に使用）
 function boxBlur(data, w, h, radius) {
   if (radius < 1) return data.slice();
-  const out = new Uint8ClampedArray(data.length);
   const r = Math.max(1, Math.round(radius));
   const temp = new Float32Array(data.length);
+  const out = new Uint8ClampedArray(data.length);
+
+  // ── 横方向：スライディングウィンドウ（半径によらずO(w)/行）
   for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let sr=0, sg=0, sb=0, sa=0, count=0;
-      for (let dx = -r; dx <= r; dx++) {
-        const sx = x + dx;
-        if (sx < 0 || sx >= w) continue;
-        const i = (y*w+sx)*4;
-        sr += data[i]; sg += data[i+1]; sb += data[i+2]; sa += data[i+3];
-        count++;
-      }
-      const oi = (y*w+x)*4;
+    const row = y * w * 4;
+    let sr=0, sg=0, sb=0, sa=0;
+    for (let k = -r; k <= r; k++) {
+      const sx = k < 0 ? 0 : (k >= w ? w - 1 : k);
+      const i = row + sx*4;
+      sr += data[i]; sg += data[i+1]; sb += data[i+2]; sa += data[i+3];
+    }
+    const count = 2*r + 1;
+    temp[row] = sr/count; temp[row+1] = sg/count; temp[row+2] = sb/count; temp[row+3] = sa/count;
+    for (let x = 1; x < w; x++) {
+      const addX = (x+r) >= w ? w-1 : x+r;
+      const remX = (x-1-r) < 0 ? 0 : x-1-r;
+      const ai = row + addX*4, ri = row + remX*4;
+      sr += data[ai]   - data[ri];
+      sg += data[ai+1] - data[ri+1];
+      sb += data[ai+2] - data[ri+2];
+      sa += data[ai+3] - data[ri+3];
+      const oi = row + x*4;
       temp[oi] = sr/count; temp[oi+1] = sg/count; temp[oi+2] = sb/count; temp[oi+3] = sa/count;
     }
   }
+
+  // ── 縦方向：同じくスライディングウィンドウ（半径によらずO(h)/列）
   for (let x = 0; x < w; x++) {
-    for (let y = 0; y < h; y++) {
-      let sr=0, sg=0, sb=0, sa=0, count=0;
-      for (let dy = -r; dy <= r; dy++) {
-        const sy = y + dy;
-        if (sy < 0 || sy >= h) continue;
-        const i = (sy*w+x)*4;
-        sr += temp[i]; sg += temp[i+1]; sb += temp[i+2]; sa += temp[i+3];
-        count++;
-      }
-      const oi = (y*w+x)*4;
+    let sr=0, sg=0, sb=0, sa=0;
+    for (let k = -r; k <= r; k++) {
+      const sy = k < 0 ? 0 : (k >= h ? h - 1 : k);
+      const i = (sy*w+x)*4;
+      sr += temp[i]; sg += temp[i+1]; sb += temp[i+2]; sa += temp[i+3];
+    }
+    const count = 2*r + 1;
+    let oi = x*4;
+    out[oi] = sr/count; out[oi+1] = sg/count; out[oi+2] = sb/count; out[oi+3] = sa/count;
+    for (let y = 1; y < h; y++) {
+      const addY = (y+r) >= h ? h-1 : y+r;
+      const remY = (y-1-r) < 0 ? 0 : y-1-r;
+      const ai = (addY*w+x)*4, ri = (remY*w+x)*4;
+      sr += temp[ai]   - temp[ri];
+      sg += temp[ai+1] - temp[ri+1];
+      sb += temp[ai+2] - temp[ri+2];
+      sa += temp[ai+3] - temp[ri+3];
+      oi = (y*w+x)*4;
       out[oi] = sr/count; out[oi+1] = sg/count; out[oi+2] = sb/count; out[oi+3] = sa/count;
     }
   }
