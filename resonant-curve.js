@@ -210,6 +210,48 @@ function hslToRgbArr(h, s, l) {
   return [(r+m)*255, (g+m)*255, (b+m)*255];
 }
 
+// ── スライディングウィンドウ最大値フィルタ（モルフォロジー膨張。OUTLINEの線を太らせるのに使用）
+// 単チャンネルのFloat32Array/Uint8Arrayに対して、半径によらず高速なO(1)償却の単調deque方式
+function maxFilter(data, w, h, radius) {
+  const r = Math.max(1, Math.round(radius));
+  const temp = new Float32Array(w * h);
+  const out = new Float32Array(w * h);
+  const deque = new Int32Array(Math.max(w, h) + 1);
+
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let head = 0, tail = 0; // [head, tail)
+    for (let x = 0; x < w + r; x++) {
+      if (x < w) {
+        const v = data[row + x];
+        while (tail > head && data[row + deque[tail-1]] <= v) tail--;
+        deque[tail++] = x;
+      }
+      const outX = x - r;
+      if (outX >= 0 && outX < w) {
+        while (deque[head] < outX - r) head++;
+        temp[row + outX] = data[row + deque[head]];
+      }
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let head = 0, tail = 0;
+    for (let y = 0; y < h + r; y++) {
+      if (y < h) {
+        const v = temp[y*w + x];
+        while (tail > head && temp[deque[tail-1]*w + x] <= v) tail--;
+        deque[tail++] = y;
+      }
+      const outY = y - r;
+      if (outY >= 0 && outY < h) {
+        while (deque[head] < outY - r) head++;
+        out[outY*w + x] = temp[deque[head]*w + x];
+      }
+    }
+  }
+  return out;
+}
+
 function boxBlur(data, w, h, radius) {
   if (radius < 1) return data.slice();
   const r = Math.max(1, Math.round(radius));
@@ -425,7 +467,7 @@ function applyResonantCurve(preview) {
   //    実際に使う色の種類そのものを絞り込む（チャンネル別の量子化だと理論上27色まで残ってしまうため、
   //    RGB空間でのk-meansクラスタリングに変更。右に振り切ると本当に2〜3色のポスターのような絵になる）
   if (flatten > 0.01) {
-    const flattenRadius = flatten * 22 * Math.max(radiusScale, 0.35);
+    const flattenRadius = flatten * 14 * Math.max(radiusScale, 0.35);
     const blurred = boxBlur(out, w, h, flattenRadius);
     const k = Math.max(2, Math.round(20 - flatten * 18)); // 20色（控えめ）〜2色（究極にシンプル）
     const centers = kMeansColors(blurred, w, h, k);
@@ -441,15 +483,15 @@ function applyResonantCurve(preview) {
       next[i] = centers[bestIdx][0]; next[i+1] = centers[bestIdx][1]; next[i+2] = centers[bestIdx][2];
       next[i+3] = out[i+3];
     }
-    // 色面の境界のギザつきを軽く滑らかにする（心地よい、丸みのある輪郭に）
-    out = boxBlur(next, w, h, 0.8 + flatten * 1.6 * Math.max(radiusScale, 0.35));
+    // 色面の境界はシャープなまま残す（滑らかさはOUTLINE側のにじみだけで表現する）
+    out = next;
   }
 
   // ── OUTLINE：Sobelでエッジを検出し、その場の色を沈めた「インク色」で輪郭線として重ねる
-  //    （黒固定ではなく地の色から自動生成）。スライダーを上げるほど線が太く・滑らかになるよう、
-  //    検出したエッジをぼかして"にじませる"ことで太らせる（筆で描いたような柔らかい輪郭になる）
+  //    （黒固定ではなく地の色から自動生成）。太らせ方は「ぼかし」ではなく「モルフォロジー膨張」を使うことで、
+  //    太くなっても線の輪郭自体はキレのある、人が描いたような滑らかな線を保つ
   if (outline > 0.01) {
-    const edgeField = new Uint8ClampedArray(w * h * 4);
+    const edgeField = new Float32Array(w * h);
     const getLum = (x, y) => {
       const xx = x < 0 ? 0 : (x >= w ? w-1 : x);
       const yy = y < 0 ? 0 : (y >= h ? h-1 : y);
@@ -463,28 +505,29 @@ function applyResonantCurve(preview) {
         const gy = -getLum(x-1,y-1) - 2*getLum(x,y-1) - getLum(x+1,y-1)
                    +getLum(x-1,y+1) + 2*getLum(x,y+1) + getLum(x+1,y+1);
         const mag = Math.sqrt(gx*gx + gy*gy) / 1020;
-        const edge = Math.max(0, Math.min(1, mag * 2.8)) * 255;
-        const ei = (y*w+x)*4;
-        edgeField[ei] = edge; edgeField[ei+1] = edge; edgeField[ei+2] = edge; edgeField[ei+3] = 255;
+        edgeField[y*w+x] = Math.max(0, Math.min(1, mag * 2.8)) * 255;
       }
     }
-    // 太さ：ぼかし半径をOUTLINEに比例して大きくする（にじみが太さになる）
-    const dilateRadius = 1 + outline * 11 * Math.max(radiusScale, 0.35);
-    const dilated = boxBlur(edgeField, w, h, dilateRadius);
+    // 太さ：ぼかしではなく最大値フィルタ（モルフォロジー膨張）で太らせる。輪郭のキレはそのまま
+    const dilateRadius = 1 + outline * 10 * Math.max(radiusScale, 0.35);
+    const dilated = maxFilter(edgeField, w, h, dilateRadius);
+    // 膨張だけだと1px単位のギザつきが残るので、ごく小さく（にじませない程度に）アンチエイリアスをかける
+    const aaPack = new Uint8ClampedArray(w * h * 4);
+    for (let p = 0; p < w*h; p++) { const v = dilated[p]; aaPack[p*4]=v; aaPack[p*4+1]=v; aaPack[p*4+2]=v; aaPack[p*4+3]=255; }
+    const aa = boxBlur(aaPack, w, h, 0.6 * Math.max(radiusScale, 0.35));
 
     const next = new Uint8ClampedArray(out);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        const ei = (y*w+x)*4;
-        // ぼかしで薄まった分を持ち上げて、太らせても線がか細くならないようにする
-        const thickEdge = Math.max(0, Math.min(1, (dilated[ei] / 255) * (1 + outline * 3)));
-        if (thickEdge < 0.02) continue;
+        const p = y*w+x;
+        const thickEdge = aa[p*4] / 255;
+        if (thickEdge < 0.04) continue;
 
-        const i = (y*w+x)*4;
+        const i = p*4;
         const inkR = out[i]   * 0.32;
         const inkG = out[i+1] * 0.32;
         const inkB = out[i+2] * 0.32;
-        const blend = Math.min(1, thickEdge * (0.6 + outline * 0.8));
+        const blend = Math.min(1, thickEdge * (0.7 + outline * 0.9));
         next[i]   = out[i]   * (1-blend) + inkR * blend;
         next[i+1] = out[i+1] * (1-blend) + inkG * blend;
         next[i+2] = out[i+2] * (1-blend) + inkB * blend;
