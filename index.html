@@ -220,6 +220,22 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
       </div>
 
       <div class="ctrl-group">
+        <div class="ctrl-label">
+          <span class="name">FLATTEN <span class="jp-small">ベタ塗り度</span></span>
+          <span class="val" id="flattenVal">0%</span>
+        </div>
+        <input type="range" id="flatten" min="0" max="100" value="0">
+      </div>
+
+      <div class="ctrl-group">
+        <div class="ctrl-label">
+          <span class="name">OUTLINE <span class="jp-small">輪郭線</span></span>
+          <span class="val" id="outlineVal">0%</span>
+        </div>
+        <input type="range" id="outline" min="0" max="100" value="0">
+      </div>
+
+      <div class="ctrl-group">
         <div class="checkbox-row">
           <input type="checkbox" id="monochrome">
           <label for="monochrome">MONOCHROME <span style="opacity:0.6;font-weight:400;">/ モノクロ変換</span></label>
@@ -244,6 +260,10 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
           <div class="profile-btn" data-patch="drone">
             <span class="profile-name">Drone</span>
             <span class="profile-desc">持続的で瞑想的</span>
+          </div>
+          <div class="profile-btn" data-patch="ink" style="grid-column: 1 / -1;">
+            <span class="profile-name">Ink</span>
+            <span class="profile-desc">ベタ塗り＋輪郭線</span>
           </div>
         </div>
       </div>

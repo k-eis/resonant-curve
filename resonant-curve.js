@@ -6,6 +6,8 @@
 // 04 LFO        → cloudNoiseベースの緩やかな空間的揺らぎ
 // 05 ENVELOPE   → 画面中心→端に向かって効果が強まる空間的ADSR
 // 06 BITCRUSH   → 量子化前にディザを足してから階調を落とす、ローファイサンプラーのビット深度
+// 07 FLATTEN    → 強めのぼかし＋大胆な色数削減で、色面の塊を作る（熊谷守一のベタ塗り的表現）
+// 08 OUTLINE    → Sobelでエッジを検出し、地の色を沈めたインク色で輪郭線を重ねる
 // （2段階プレビュー処理・ノイズ関数・iOS保存はMemory Grain a520 / Clair de Luneの既存資産を移植）
 
 const dropZone = document.getElementById('dropZone');
@@ -20,6 +22,8 @@ const waveformSlider = document.getElementById('waveform');
 const lfoSlider = document.getElementById('lfo');
 const envelopeSlider = document.getElementById('envelope');
 const bitcrushSlider = document.getElementById('bitcrush');
+const flattenSlider = document.getElementById('flatten');
+const outlineSlider = document.getElementById('outline');
 const monochromeCheckbox = document.getElementById('monochrome');
 
 const cutoffVal = document.getElementById('cutoffVal');
@@ -28,6 +32,8 @@ const waveformVal = document.getElementById('waveformVal');
 const lfoVal = document.getElementById('lfoVal');
 const envelopeVal = document.getElementById('envelopeVal');
 const bitcrushVal = document.getElementById('bitcrushVal');
+const flattenVal = document.getElementById('flattenVal');
+const outlineVal = document.getElementById('outlineVal');
 
 const downloadBtn = document.getElementById('downloadBtn');
 const resetBtn = document.getElementById('resetBtn');
@@ -201,6 +207,8 @@ function applyResonantCurve(preview) {
   const lfo = parseInt(lfoSlider.value) / 100;
   const envelope = parseInt(envelopeSlider.value) / 100;
   const bitcrush = parseInt(bitcrushSlider.value) / 100;
+  const flatten = parseInt(flattenSlider.value) / 100;
+  const outline = parseInt(outlineSlider.value) / 100;
   const mono = monochromeCheckbox.checked;
 
   const src = useData.data;
@@ -339,6 +347,55 @@ function applyResonantCurve(preview) {
     out = next;
   }
 
+  // ── FLATTEN：強めのぼかしで細部を馴染ませてから、色数を大胆に減らして色面の塊を作る（熊谷守一のベタ塗り的表現）
+  if (flatten > 0.01) {
+    const flattenRadius = flatten * 16 * Math.max(radiusScale, 0.35);
+    const blurred = boxBlur(out, w, h, flattenRadius);
+    const levels = Math.max(2, Math.round(9 - flatten * 6)); // 9段階〜3段階
+    const step = 255 / (levels - 1);
+    const next = new Uint8ClampedArray(out.length);
+    for (let i = 0; i < out.length; i += 4) {
+      next[i]   = Math.round(blurred[i]   / step) * step;
+      next[i+1] = Math.round(blurred[i+1] / step) * step;
+      next[i+2] = Math.round(blurred[i+2] / step) * step;
+      next[i+3] = out[i+3];
+    }
+    out = next;
+  }
+
+  // ── OUTLINE：Sobelでエッジを検出し、その場の色を沈めた「インク色」で輪郭線として重ねる
+  //    （黒固定ではなく地の色から自動生成——色面ごとに固有の色数まで削ぎ落とす熊谷守一の技法に近づける）
+  if (outline > 0.01) {
+    const next = new Uint8ClampedArray(out);
+    const getLum = (x, y) => {
+      const xx = x < 0 ? 0 : (x >= w ? w-1 : x);
+      const yy = y < 0 ? 0 : (y >= h ? h-1 : y);
+      const i = (yy*w+xx)*4;
+      return out[i]*0.299 + out[i+1]*0.587 + out[i+2]*0.114;
+    };
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const gx = -getLum(x-1,y-1) - 2*getLum(x-1,y) - getLum(x-1,y+1)
+                   +getLum(x+1,y-1) + 2*getLum(x+1,y) + getLum(x+1,y+1);
+        const gy = -getLum(x-1,y-1) - 2*getLum(x,y-1) - getLum(x+1,y-1)
+                   +getLum(x-1,y+1) + 2*getLum(x,y+1) + getLum(x+1,y+1);
+        const mag = Math.sqrt(gx*gx + gy*gy) / 1020; // 0〜およそ1に正規化
+        const edge = Math.max(0, Math.min(1, mag * 2.2));
+        if (edge < 0.02) continue;
+
+        const i = (y*w+x)*4;
+        const inkR = out[i]   * 0.32;
+        const inkG = out[i+1] * 0.32;
+        const inkB = out[i+2] * 0.32;
+        const blend = Math.min(1, edge * outline * 1.8);
+        next[i]   = out[i]   * (1-blend) + inkR * blend;
+        next[i+1] = out[i+1] * (1-blend) + inkG * blend;
+        next[i+2] = out[i+2] * (1-blend) + inkB * blend;
+      }
+    }
+    out = next;
+  }
+
   // ── BITCRUSH：量子化前に小さなディザを足してから階調を落とす（ローファイサンプラーのビットクラッシュ）
   if (bitcrush > 0.01) {
     const levels = Math.max(4, Math.round(255 - bitcrush * 251)); // 大きいほど粗い量子化幅
@@ -385,7 +442,7 @@ function applyResonantCurve(preview) {
 }
 
 // ── UIイベント
-const allSliders = [cutoffSlider, resonanceSlider, waveformSlider, lfoSlider, envelopeSlider, bitcrushSlider];
+const allSliders = [cutoffSlider, resonanceSlider, waveformSlider, lfoSlider, envelopeSlider, bitcrushSlider, flattenSlider, outlineSlider];
 
 allSliders.forEach(slider => {
   slider.addEventListener('pointerdown', () => { isDragging = true; });
@@ -410,14 +467,17 @@ waveformSlider.addEventListener('input', () => { waveformVal.textContent = wavef
 lfoSlider.addEventListener('input', () => { lfoVal.textContent = lfoSlider.value + '%'; clearPatchActive(); requestApply(); });
 envelopeSlider.addEventListener('input', () => { envelopeVal.textContent = envelopeSlider.value + '%'; clearPatchActive(); requestApply(); });
 bitcrushSlider.addEventListener('input', () => { bitcrushVal.textContent = bitcrushSlider.value + '%'; clearPatchActive(); requestApply(); });
+flattenSlider.addEventListener('input', () => { flattenVal.textContent = flattenSlider.value + '%'; clearPatchActive(); requestApply(); });
+outlineSlider.addEventListener('input', () => { outlineVal.textContent = outlineSlider.value + '%'; clearPatchActive(); requestApply(); });
 monochromeCheckbox.addEventListener('change', () => applyResonantCurve());
 
 // ── Patch プリセット
 const PATCH_PROFILES = {
-  init:  { cutoff: 50, resonance: 15, waveform: 20, lfo: 10, envelope: 15, bitcrush: 0  }, // 初期化・控えめ
-  pad:   { cutoff: 65, resonance: 25, waveform: 10, lfo: 35, envelope: 25, bitcrush: 0  }, // 滑らかで広がる
-  acid:  { cutoff: 35, resonance: 80, waveform: 70, lfo: 15, envelope: 40, bitcrush: 35 }, // うねる自己発振
-  drone: { cutoff: 55, resonance: 45, waveform: 15, lfo: 70, envelope: 60, bitcrush: 20 }, // 持続的で瞑想的
+  init:  { cutoff: 50, resonance: 15, waveform: 20, lfo: 10, envelope: 15, bitcrush: 0,  flatten: 0,  outline: 0  }, // 初期化・控えめ
+  pad:   { cutoff: 65, resonance: 25, waveform: 10, lfo: 35, envelope: 25, bitcrush: 0,  flatten: 0,  outline: 0  }, // 滑らかで広がる
+  acid:  { cutoff: 35, resonance: 80, waveform: 70, lfo: 15, envelope: 40, bitcrush: 35, flatten: 0,  outline: 0  }, // うねる自己発振
+  drone: { cutoff: 55, resonance: 45, waveform: 15, lfo: 70, envelope: 60, bitcrush: 20, flatten: 0,  outline: 0  }, // 持続的で瞑想的
+  ink:   { cutoff: 50, resonance: 10, waveform: 0,  lfo: 5,  envelope: 20, bitcrush: 0,  flatten: 65, outline: 55 }, // ベタ塗り＋輪郭線（熊谷守一的）
 };
 
 patchBtns.forEach(btn => {
@@ -430,6 +490,8 @@ patchBtns.forEach(btn => {
     lfoSlider.value = p.lfo; lfoVal.textContent = p.lfo + '%';
     envelopeSlider.value = p.envelope; envelopeVal.textContent = p.envelope + '%';
     bitcrushSlider.value = p.bitcrush; bitcrushVal.textContent = p.bitcrush + '%';
+    flattenSlider.value = p.flatten; flattenVal.textContent = p.flatten + '%';
+    outlineSlider.value = p.outline; outlineVal.textContent = p.outline + '%';
     patchBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     requestApply();
