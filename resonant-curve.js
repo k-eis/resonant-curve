@@ -87,7 +87,7 @@ function loadFile(file) {
 }
 
 function setupCanvas(img) {
-  const MAX_W = 1200;
+  const MAX_W = 900;
   let w = img.width, h = img.height;
   if (w > MAX_W) { h = h * (MAX_W / w); w = MAX_W; }
   outputCanvas.width = w;
@@ -110,8 +110,20 @@ let driftRAF = null;
 function requestApply() {
   if (driftRAF) cancelAnimationFrame(driftRAF);
   driftRAF = requestAnimationFrame(() => {
-    applyResonantCurve(isDragging);
     driftRAF = null;
+    if (isDragging) {
+      applyResonantCurve(true);
+    } else {
+      // フル解像度の重い処理の前に「処理中…」を一度描画してから計算に入る
+      // （setTimeoutで1フレーム挟むことで、フリーズしてるように見えるのを防ぐ）
+      const prevBadge = canvasBadge.textContent;
+      canvasBadge.textContent = '処理中… PROCESSING';
+      canvasBadge.style.display = 'block';
+      setTimeout(() => {
+        applyResonantCurve(false);
+        canvasBadge.textContent = 'PREVIEW';
+      }, 10);
+    }
   });
 }
 
@@ -662,8 +674,8 @@ monochromeCheckbox.addEventListener('change', () => applyResonantCurve());
 
 // ── Patch プリセット
 const PATCH_PROFILES = {
-  init:  { cutoff: 100, resonance: 0,  waveform: 0,  lfo: 0,  envelope: 0,  bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100, inkHue: 0 }, // 完全オリジナル（無加工）
-  rec:   { cutoff: 58,  resonance: 22, waveform: 12, lfo: 18, envelope: 22, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100, inkHue: 0 }, // おすすめ：軽やかな共鳴と揺らぎ
+  init:  { cutoff: 100, resonance: 0,  waveform: 0,  lfo: 0,  envelope: 0,  bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100, inkHue: 0 }, // 初期化（無加工）
+  rec:   { cutoff: 58,  resonance: 22, waveform: 12, lfo: 18, envelope: 22, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100, inkHue: 0 }, // Aurora：ほのかなグローと揺らぎ
   acid:  { cutoff: 35,  resonance: 80, waveform: 70, lfo: 15, envelope: 40, bitcrush: 35, flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100, inkHue: 0 }, // うねる自己発振
   abst:  { cutoff: 50,  resonance: 10, waveform: 0,  lfo: 5,  envelope: 20, bitcrush: 0,  flatten: 65, outline: 55, nihonga: 40, inkTone: 60,  inkHue: 0 }, // 抽象画：ベタ塗り＋太い輪郭線＋和の色調
 };
@@ -683,6 +695,7 @@ patchBtns.forEach(btn => {
     nihongaSlider.value = p.nihonga; nihongaVal.textContent = p.nihonga + '%';
     inkToneSlider.value = p.inkTone; inkToneVal.textContent = p.inkTone + '%';
     inkHueSlider.value = p.inkHue; inkHueVal.textContent = Math.round((p.inkHue/100)*360) + '°';
+    if (btn.dataset.patch === 'init') monochromeCheckbox.checked = false; // 初期化は本当に無加工に戻す
     patchBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     requestApply();
