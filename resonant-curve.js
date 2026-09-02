@@ -7,7 +7,8 @@
 // 05 ENVELOPE   → 画面中心→端に向かって効果が強まる空間的ADSR
 // 06 BITCRUSH   → 量子化前にディザを足してから階調を落とす、ローファイサンプラーのビット深度
 // 07 FLATTEN    → 強めのぼかし＋大胆な色数削減で、色面の塊を作る（熊谷守一のベタ塗り的表現）
-// 08 OUTLINE    → Sobelでエッジを検出し、地の色を沈めたインク色で輪郭線を重ねる
+// 08 OUTLINE    → Sobelでエッジを検出し、地の色を沈めたインク色で輪郭線を重ねる（ぼかしで太らせる）
+// 09 NIHONGA    → 色相を岩絵具的なアンカー色へ寄せ、彩度を落として和紙のようなマットな質感にする
 // （2段階プレビュー処理・ノイズ関数・iOS保存はMemory Grain a520 / Clair de Luneの既存資産を移植）
 
 const dropZone = document.getElementById('dropZone');
@@ -24,6 +25,7 @@ const envelopeSlider = document.getElementById('envelope');
 const bitcrushSlider = document.getElementById('bitcrush');
 const flattenSlider = document.getElementById('flatten');
 const outlineSlider = document.getElementById('outline');
+const nihongaSlider = document.getElementById('nihonga');
 const monochromeCheckbox = document.getElementById('monochrome');
 
 const cutoffVal = document.getElementById('cutoffVal');
@@ -34,6 +36,7 @@ const envelopeVal = document.getElementById('envelopeVal');
 const bitcrushVal = document.getElementById('bitcrushVal');
 const flattenVal = document.getElementById('flattenVal');
 const outlineVal = document.getElementById('outlineVal');
+const nihongaVal = document.getElementById('nihongaVal');
 
 const downloadBtn = document.getElementById('downloadBtn');
 const resetBtn = document.getElementById('resetBtn');
@@ -181,6 +184,32 @@ function kMeansColors(data, w, h, k) {
   return centers;
 }
 
+function rgbToHsl(r, g, b) {
+  r/=255; g/=255; b/=255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b);
+  let h=0, s=0; const l = (max+min)/2;
+  const d = max-min;
+  if (d > 0.0001) {
+    s = l > 0.5 ? d/(2-max-min) : d/(max+min);
+    if (max===r) h = ((g-b)/d + (g<b?6:0));
+    else if (max===g) h = (b-r)/d + 2;
+    else h = (r-g)/d + 4;
+    h *= 60;
+  }
+  return [h, s, l];
+}
+function hslToRgbArr(h, s, l) {
+  h = ((h%360)+360)%360;
+  const c = (1-Math.abs(2*l-1))*s;
+  const x = c*(1-Math.abs((h/60)%2-1));
+  const m = l - c/2;
+  let r=0,g=0,b=0;
+  if (h<60){r=c;g=x;b=0;} else if (h<120){r=x;g=c;b=0;}
+  else if (h<180){r=0;g=c;b=x;} else if (h<240){r=0;g=x;b=c;}
+  else if (h<300){r=x;g=0;b=c;} else {r=c;g=0;b=x;}
+  return [(r+m)*255, (g+m)*255, (b+m)*255];
+}
+
 function boxBlur(data, w, h, radius) {
   if (radius < 1) return data.slice();
   const r = Math.max(1, Math.round(radius));
@@ -253,6 +282,7 @@ function applyResonantCurve(preview) {
   const bitcrush = parseInt(bitcrushSlider.value) / 100;
   const flatten = parseInt(flattenSlider.value) / 100;
   const outline = parseInt(outlineSlider.value) / 100;
+  const nihonga = parseInt(nihongaSlider.value) / 100;
   const mono = monochromeCheckbox.checked;
 
   const src = useData.data;
@@ -411,13 +441,15 @@ function applyResonantCurve(preview) {
       next[i] = centers[bestIdx][0]; next[i+1] = centers[bestIdx][1]; next[i+2] = centers[bestIdx][2];
       next[i+3] = out[i+3];
     }
-    out = next;
+    // 色面の境界のギザつきを軽く滑らかにする（心地よい、丸みのある輪郭に）
+    out = boxBlur(next, w, h, 0.8 + flatten * 1.6 * Math.max(radiusScale, 0.35));
   }
 
   // ── OUTLINE：Sobelでエッジを検出し、その場の色を沈めた「インク色」で輪郭線として重ねる
-  //    （黒固定ではなく地の色から自動生成——色面ごとに固有の色数まで削ぎ落とす熊谷守一の技法に近づける）
+  //    （黒固定ではなく地の色から自動生成）。スライダーを上げるほど線が太く・滑らかになるよう、
+  //    検出したエッジをぼかして"にじませる"ことで太らせる（筆で描いたような柔らかい輪郭になる）
   if (outline > 0.01) {
-    const next = new Uint8ClampedArray(out);
+    const edgeField = new Uint8ClampedArray(w * h * 4);
     const getLum = (x, y) => {
       const xx = x < 0 ? 0 : (x >= w ? w-1 : x);
       const yy = y < 0 ? 0 : (y >= h ? h-1 : y);
@@ -430,19 +462,62 @@ function applyResonantCurve(preview) {
                    +getLum(x+1,y-1) + 2*getLum(x+1,y) + getLum(x+1,y+1);
         const gy = -getLum(x-1,y-1) - 2*getLum(x,y-1) - getLum(x+1,y-1)
                    +getLum(x-1,y+1) + 2*getLum(x,y+1) + getLum(x+1,y+1);
-        const mag = Math.sqrt(gx*gx + gy*gy) / 1020; // 0〜およそ1に正規化
-        const edge = Math.max(0, Math.min(1, mag * 2.2));
-        if (edge < 0.02) continue;
+        const mag = Math.sqrt(gx*gx + gy*gy) / 1020;
+        const edge = Math.max(0, Math.min(1, mag * 2.8)) * 255;
+        const ei = (y*w+x)*4;
+        edgeField[ei] = edge; edgeField[ei+1] = edge; edgeField[ei+2] = edge; edgeField[ei+3] = 255;
+      }
+    }
+    // 太さ：ぼかし半径をOUTLINEに比例して大きくする（にじみが太さになる）
+    const dilateRadius = 1 + outline * 11 * Math.max(radiusScale, 0.35);
+    const dilated = boxBlur(edgeField, w, h, dilateRadius);
+
+    const next = new Uint8ClampedArray(out);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const ei = (y*w+x)*4;
+        // ぼかしで薄まった分を持ち上げて、太らせても線がか細くならないようにする
+        const thickEdge = Math.max(0, Math.min(1, (dilated[ei] / 255) * (1 + outline * 3)));
+        if (thickEdge < 0.02) continue;
 
         const i = (y*w+x)*4;
         const inkR = out[i]   * 0.32;
         const inkG = out[i+1] * 0.32;
         const inkB = out[i+2] * 0.32;
-        const blend = Math.min(1, edge * outline * 1.8);
+        const blend = Math.min(1, thickEdge * (0.6 + outline * 0.8));
         next[i]   = out[i]   * (1-blend) + inkR * blend;
         next[i+1] = out[i+1] * (1-blend) + inkG * blend;
         next[i+2] = out[i+2] * (1-blend) + inkB * blend;
       }
+    }
+    out = next;
+  }
+
+  // ── NIHONGA：色相を日本画の岩絵具を思わせるアンカー（朱・黄土・緑青・藍・鈍い紫）へ寄せ、
+  //    彩度を少し落として和紙のようなマットな質感に。インクの線も同じ色調に馴染む
+  if (nihonga > 0.01) {
+    const anchors = [10, 40, 150, 210, 320]; // 朱・黄土・緑青・藍・鈍い紫
+    const next = new Uint8ClampedArray(out.length);
+    for (let i = 0; i < out.length; i += 4) {
+      let [h, s, l] = rgbToHsl(out[i], out[i+1], out[i+2]);
+      let nearest = anchors[0], bestDiff = 360;
+      for (const a of anchors) {
+        let diff = Math.abs(h - a);
+        if (diff > 180) diff = 360 - diff;
+        if (diff < bestDiff) { bestDiff = diff; nearest = a; }
+      }
+      let hueDiff = nearest - h;
+      if (hueDiff > 180) hueDiff -= 360;
+      if (hueDiff < -180) hueDiff += 360;
+      h = h + hueDiff * (nihonga * 0.7);
+      s = s * (1 - nihonga * 0.25) + nihonga * 0.12;
+      l = l * (1 - nihonga * 0.12) + nihonga * 0.08;
+      const [r,g,b] = hslToRgbArr(h, Math.max(0,Math.min(1,s)), Math.max(0,Math.min(1,l)));
+      // 和紙のような、わずかな暖色シフト
+      next[i]   = r + nihonga * 6;
+      next[i+1] = g;
+      next[i+2] = b - nihonga * 6;
+      next[i+3] = out[i+3];
     }
     out = next;
   }
@@ -493,7 +568,7 @@ function applyResonantCurve(preview) {
 }
 
 // ── UIイベント
-const allSliders = [cutoffSlider, resonanceSlider, waveformSlider, lfoSlider, envelopeSlider, bitcrushSlider, flattenSlider, outlineSlider];
+const allSliders = [cutoffSlider, resonanceSlider, waveformSlider, lfoSlider, envelopeSlider, bitcrushSlider, flattenSlider, outlineSlider, nihongaSlider];
 
 allSliders.forEach(slider => {
   slider.addEventListener('pointerdown', () => { isDragging = true; });
@@ -520,15 +595,16 @@ envelopeSlider.addEventListener('input', () => { envelopeVal.textContent = envel
 bitcrushSlider.addEventListener('input', () => { bitcrushVal.textContent = bitcrushSlider.value + '%'; clearPatchActive(); requestApply(); });
 flattenSlider.addEventListener('input', () => { flattenVal.textContent = flattenSlider.value + '%'; clearPatchActive(); requestApply(); });
 outlineSlider.addEventListener('input', () => { outlineVal.textContent = outlineSlider.value + '%'; clearPatchActive(); requestApply(); });
+nihongaSlider.addEventListener('input', () => { nihongaVal.textContent = nihongaSlider.value + '%'; clearPatchActive(); requestApply(); });
 monochromeCheckbox.addEventListener('change', () => applyResonantCurve());
 
 // ── Patch プリセット
 const PATCH_PROFILES = {
-  init:  { cutoff: 50, resonance: 15, waveform: 20, lfo: 10, envelope: 15, bitcrush: 0,  flatten: 0,  outline: 0  }, // 初期化・控えめ
-  pad:   { cutoff: 65, resonance: 25, waveform: 10, lfo: 35, envelope: 25, bitcrush: 0,  flatten: 0,  outline: 0  }, // 滑らかで広がる
-  acid:  { cutoff: 35, resonance: 80, waveform: 70, lfo: 15, envelope: 40, bitcrush: 35, flatten: 0,  outline: 0  }, // うねる自己発振
-  drone: { cutoff: 55, resonance: 45, waveform: 15, lfo: 70, envelope: 60, bitcrush: 20, flatten: 0,  outline: 0  }, // 持続的で瞑想的
-  ink:   { cutoff: 50, resonance: 10, waveform: 0,  lfo: 5,  envelope: 20, bitcrush: 0,  flatten: 65, outline: 55 }, // ベタ塗り＋輪郭線（熊谷守一的）
+  init:  { cutoff: 50, resonance: 15, waveform: 20, lfo: 10, envelope: 15, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0  }, // 初期化・控えめ
+  pad:   { cutoff: 65, resonance: 25, waveform: 10, lfo: 35, envelope: 25, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0  }, // 滑らかで広がる
+  acid:  { cutoff: 35, resonance: 80, waveform: 70, lfo: 15, envelope: 40, bitcrush: 35, flatten: 0,  outline: 0,  nihonga: 0  }, // うねる自己発振
+  drone: { cutoff: 55, resonance: 45, waveform: 15, lfo: 70, envelope: 60, bitcrush: 20, flatten: 0,  outline: 0,  nihonga: 0  }, // 持続的で瞑想的
+  ink:   { cutoff: 50, resonance: 10, waveform: 0,  lfo: 5,  envelope: 20, bitcrush: 0,  flatten: 65, outline: 55, nihonga: 40 }, // ベタ塗り＋太い輪郭線＋和の色調
 };
 
 patchBtns.forEach(btn => {
@@ -543,6 +619,7 @@ patchBtns.forEach(btn => {
     bitcrushSlider.value = p.bitcrush; bitcrushVal.textContent = p.bitcrush + '%';
     flattenSlider.value = p.flatten; flattenVal.textContent = p.flatten + '%';
     outlineSlider.value = p.outline; outlineVal.textContent = p.outline + '%';
+    nihongaSlider.value = p.nihonga; nihongaVal.textContent = p.nihonga + '%';
     patchBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     requestApply();
