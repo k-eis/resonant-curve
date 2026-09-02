@@ -27,6 +27,7 @@ const bitcrushSlider = document.getElementById('bitcrush');
 const flattenSlider = document.getElementById('flatten');
 const outlineSlider = document.getElementById('outline');
 const inkToneSlider = document.getElementById('inkTone');
+const inkHueSlider = document.getElementById('inkHue');
 const nihongaSlider = document.getElementById('nihonga');
 const monochromeCheckbox = document.getElementById('monochrome');
 
@@ -39,6 +40,7 @@ const bitcrushVal = document.getElementById('bitcrushVal');
 const flattenVal = document.getElementById('flattenVal');
 const outlineVal = document.getElementById('outlineVal');
 const inkToneVal = document.getElementById('inkToneVal');
+const inkHueVal = document.getElementById('inkHueVal');
 const nihongaVal = document.getElementById('nihongaVal');
 
 const downloadBtn = document.getElementById('downloadBtn');
@@ -328,6 +330,7 @@ function applyResonantCurve(preview) {
   const flatten = parseInt(flattenSlider.value) / 100;
   const outline = parseInt(outlineSlider.value) / 100;
   const inkTone = parseInt(inkToneSlider.value) / 100;
+  const inkHue = parseInt(inkHueSlider.value) / 100;
   const nihonga = parseInt(nihongaSlider.value) / 100;
   const mono = monochromeCheckbox.checked;
 
@@ -532,9 +535,15 @@ function applyResonantCurve(preview) {
 
         const i = p*4;
         // INK TONE：0で純粋な黒インク、1（既定に近い）でその場の色を沈めたインク
-        const inkR = out[i]   * 0.32 * inkTone;
-        const inkG = out[i+1] * 0.32 * inkTone;
-        const inkB = out[i+2] * 0.32 * inkTone;
+        let inkR = out[i]   * 0.32 * inkTone;
+        let inkG = out[i+1] * 0.32 * inkTone;
+        let inkB = out[i+2] * 0.32 * inkTone;
+        // INK HUE：インクの色相を回転させる（地の色ベースを保ちつつ色みだけ変える）
+        if (inkHue > 0.001) {
+          const [ih, is, il] = rgbToHsl(inkR, inkG, inkB);
+          const [nr, ng, nb] = hslToRgbArr(ih + inkHue * 360, is, il);
+          inkR = nr; inkG = ng; inkB = nb;
+        }
         const blend = Math.min(1, thickEdge * (0.7 + outline * 0.9));
         next[i]   = out[i]   * (1-blend) + inkR * blend;
         next[i+1] = out[i+1] * (1-blend) + inkG * blend;
@@ -619,7 +628,7 @@ function applyResonantCurve(preview) {
 }
 
 // ── UIイベント
-const allSliders = [cutoffSlider, resonanceSlider, waveformSlider, lfoSlider, envelopeSlider, bitcrushSlider, flattenSlider, outlineSlider, nihongaSlider, inkToneSlider];
+const allSliders = [cutoffSlider, resonanceSlider, waveformSlider, lfoSlider, envelopeSlider, bitcrushSlider, flattenSlider, outlineSlider, nihongaSlider, inkToneSlider, inkHueSlider];
 
 allSliders.forEach(slider => {
   slider.addEventListener('pointerdown', () => { isDragging = true; });
@@ -647,16 +656,16 @@ bitcrushSlider.addEventListener('input', () => { bitcrushVal.textContent = bitcr
 flattenSlider.addEventListener('input', () => { flattenVal.textContent = flattenSlider.value + '%'; clearPatchActive(); requestApply(); });
 outlineSlider.addEventListener('input', () => { outlineVal.textContent = outlineSlider.value + '%'; clearPatchActive(); requestApply(); });
 inkToneSlider.addEventListener('input', () => { inkToneVal.textContent = inkToneSlider.value + '%'; clearPatchActive(); requestApply(); });
+inkHueSlider.addEventListener('input', () => { inkHueVal.textContent = Math.round((parseInt(inkHueSlider.value)/100)*360) + '°'; clearPatchActive(); requestApply(); });
 nihongaSlider.addEventListener('input', () => { nihongaVal.textContent = nihongaSlider.value + '%'; clearPatchActive(); requestApply(); });
 monochromeCheckbox.addEventListener('change', () => applyResonantCurve());
 
 // ── Patch プリセット
 const PATCH_PROFILES = {
-  init:  { cutoff: 50, resonance: 15, waveform: 20, lfo: 10, envelope: 15, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100 }, // 初期化・控えめ
-  pad:   { cutoff: 65, resonance: 25, waveform: 10, lfo: 35, envelope: 25, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100 }, // 滑らかで広がる
-  acid:  { cutoff: 35, resonance: 80, waveform: 70, lfo: 15, envelope: 40, bitcrush: 35, flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100 }, // うねる自己発振
-  drone: { cutoff: 55, resonance: 45, waveform: 15, lfo: 70, envelope: 60, bitcrush: 20, flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100 }, // 持続的で瞑想的
-  ink:   { cutoff: 50, resonance: 10, waveform: 0,  lfo: 5,  envelope: 20, bitcrush: 0,  flatten: 65, outline: 55, nihonga: 40, inkTone: 60  }, // ベタ塗り＋太い輪郭線＋和の色調
+  init:  { cutoff: 100, resonance: 0,  waveform: 0,  lfo: 0,  envelope: 0,  bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100, inkHue: 0 }, // 完全オリジナル（無加工）
+  rec:   { cutoff: 58,  resonance: 22, waveform: 12, lfo: 18, envelope: 22, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100, inkHue: 0 }, // おすすめ：軽やかな共鳴と揺らぎ
+  acid:  { cutoff: 35,  resonance: 80, waveform: 70, lfo: 15, envelope: 40, bitcrush: 35, flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100, inkHue: 0 }, // うねる自己発振
+  abst:  { cutoff: 50,  resonance: 10, waveform: 0,  lfo: 5,  envelope: 20, bitcrush: 0,  flatten: 65, outline: 55, nihonga: 40, inkTone: 60,  inkHue: 0 }, // 抽象画：ベタ塗り＋太い輪郭線＋和の色調
 };
 
 patchBtns.forEach(btn => {
@@ -673,6 +682,7 @@ patchBtns.forEach(btn => {
     outlineSlider.value = p.outline; outlineVal.textContent = p.outline + '%';
     nihongaSlider.value = p.nihonga; nihongaVal.textContent = p.nihonga + '%';
     inkToneSlider.value = p.inkTone; inkToneVal.textContent = p.inkTone + '%';
+    inkHueSlider.value = p.inkHue; inkHueVal.textContent = Math.round((p.inkHue/100)*360) + '°';
     patchBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     requestApply();
