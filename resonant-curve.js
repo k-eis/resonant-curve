@@ -7,7 +7,8 @@
 // 05 ENVELOPE   → 画面中心→端に向かって効果が強まる空間的ADSR
 // 06 BITCRUSH   → 量子化前にディザを足してから階調を落とす、ローファイサンプラーのビット深度
 // 07 FLATTEN    → 強めのぼかし＋大胆な色数削減で、色面の塊を作る（熊谷守一のベタ塗り的表現）
-// 08 OUTLINE    → Sobelでエッジを検出し、地の色を沈めたインク色で輪郭線を重ねる（ぼかしで太らせる）
+// 08 OUTLINE    → Sobelでエッジを検出し、地の色を沈めたインク色で輪郭線を重ねる（モルフォロジー膨張で太さ、丸め＋揺らぎで有機的に）
+//    └ INK TONE → OUTLINEのインクの色調（0=純粋な黒、1=地の色を沈めた色）
 // 09 NIHONGA    → 色相を岩絵具的なアンカー色へ寄せ、彩度を落として和紙のようなマットな質感にする
 // （2段階プレビュー処理・ノイズ関数・iOS保存はMemory Grain a520 / Clair de Luneの既存資産を移植）
 
@@ -25,6 +26,7 @@ const envelopeSlider = document.getElementById('envelope');
 const bitcrushSlider = document.getElementById('bitcrush');
 const flattenSlider = document.getElementById('flatten');
 const outlineSlider = document.getElementById('outline');
+const inkToneSlider = document.getElementById('inkTone');
 const nihongaSlider = document.getElementById('nihonga');
 const monochromeCheckbox = document.getElementById('monochrome');
 
@@ -36,6 +38,7 @@ const envelopeVal = document.getElementById('envelopeVal');
 const bitcrushVal = document.getElementById('bitcrushVal');
 const flattenVal = document.getElementById('flattenVal');
 const outlineVal = document.getElementById('outlineVal');
+const inkToneVal = document.getElementById('inkToneVal');
 const nihongaVal = document.getElementById('nihongaVal');
 
 const downloadBtn = document.getElementById('downloadBtn');
@@ -324,6 +327,7 @@ function applyResonantCurve(preview) {
   const bitcrush = parseInt(bitcrushSlider.value) / 100;
   const flatten = parseInt(flattenSlider.value) / 100;
   const outline = parseInt(outlineSlider.value) / 100;
+  const inkTone = parseInt(inkToneSlider.value) / 100;
   const nihonga = parseInt(nihongaSlider.value) / 100;
   const mono = monochromeCheckbox.checked;
 
@@ -488,8 +492,8 @@ function applyResonantCurve(preview) {
   }
 
   // ── OUTLINE：Sobelでエッジを検出し、その場の色を沈めた「インク色」で輪郭線として重ねる
-  //    （黒固定ではなく地の色から自動生成）。太らせ方は「ぼかし」ではなく「モルフォロジー膨張」を使うことで、
-  //    太くなっても線の輪郭自体はキレのある、人が描いたような滑らかな線を保つ
+  //    太らせ方はモルフォロジー膨張で輪郭のキレを保ちつつ、太さに応じて角を丸め、
+  //    cloudNoiseでごくわずかに輪郭を揺らして、人が描いたような有機的な線にする
   if (outline > 0.01) {
     const edgeField = new Float32Array(w * h);
     const getLum = (x, y) => {
@@ -508,25 +512,29 @@ function applyResonantCurve(preview) {
         edgeField[y*w+x] = Math.max(0, Math.min(1, mag * 2.8)) * 255;
       }
     }
-    // 太さ：ぼかしではなく最大値フィルタ（モルフォロジー膨張）で太らせる。輪郭のキレはそのまま
+    // 太さ：モルフォロジー膨張（正方形寄りの角ばった形になる）
     const dilateRadius = 1 + outline * 10 * Math.max(radiusScale, 0.35);
     const dilated = maxFilter(edgeField, w, h, dilateRadius);
-    // 膨張だけだと1px単位のギザつきが残るので、ごく小さく（にじませない程度に）アンチエイリアスをかける
+    // 角の丸め：太さに比例してアンチエイリアス半径を大きくし、機械的な角ばりを丸める
+    const roundRadius = Math.min(4.5, Math.max(0.6, dilateRadius * 0.3)) * Math.max(radiusScale, 0.35);
     const aaPack = new Uint8ClampedArray(w * h * 4);
     for (let p = 0; p < w*h; p++) { const v = dilated[p]; aaPack[p*4]=v; aaPack[p*4+1]=v; aaPack[p*4+2]=v; aaPack[p*4+3]=255; }
-    const aa = boxBlur(aaPack, w, h, 0.6 * Math.max(radiusScale, 0.35));
+    const aa = boxBlur(aaPack, w, h, roundRadius);
 
     const next = new Uint8ClampedArray(out);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const p = y*w+x;
-        const thickEdge = aa[p*4] / 255;
+        // 有機的な揺らぎ：輪郭の"太さ"自体をcloudNoiseでほんの少し波打たせ、機械的な均一さを崩す
+        const jitter = (cloudNoise(x, y) - 0.5) * 0.22 * outline;
+        const thickEdge = Math.max(0, Math.min(1, aa[p*4] / 255 + jitter));
         if (thickEdge < 0.04) continue;
 
         const i = p*4;
-        const inkR = out[i]   * 0.32;
-        const inkG = out[i+1] * 0.32;
-        const inkB = out[i+2] * 0.32;
+        // INK TONE：0で純粋な黒インク、1（既定に近い）でその場の色を沈めたインク
+        const inkR = out[i]   * 0.32 * inkTone;
+        const inkG = out[i+1] * 0.32 * inkTone;
+        const inkB = out[i+2] * 0.32 * inkTone;
         const blend = Math.min(1, thickEdge * (0.7 + outline * 0.9));
         next[i]   = out[i]   * (1-blend) + inkR * blend;
         next[i+1] = out[i+1] * (1-blend) + inkG * blend;
@@ -611,7 +619,7 @@ function applyResonantCurve(preview) {
 }
 
 // ── UIイベント
-const allSliders = [cutoffSlider, resonanceSlider, waveformSlider, lfoSlider, envelopeSlider, bitcrushSlider, flattenSlider, outlineSlider, nihongaSlider];
+const allSliders = [cutoffSlider, resonanceSlider, waveformSlider, lfoSlider, envelopeSlider, bitcrushSlider, flattenSlider, outlineSlider, nihongaSlider, inkToneSlider];
 
 allSliders.forEach(slider => {
   slider.addEventListener('pointerdown', () => { isDragging = true; });
@@ -638,16 +646,17 @@ envelopeSlider.addEventListener('input', () => { envelopeVal.textContent = envel
 bitcrushSlider.addEventListener('input', () => { bitcrushVal.textContent = bitcrushSlider.value + '%'; clearPatchActive(); requestApply(); });
 flattenSlider.addEventListener('input', () => { flattenVal.textContent = flattenSlider.value + '%'; clearPatchActive(); requestApply(); });
 outlineSlider.addEventListener('input', () => { outlineVal.textContent = outlineSlider.value + '%'; clearPatchActive(); requestApply(); });
+inkToneSlider.addEventListener('input', () => { inkToneVal.textContent = inkToneSlider.value + '%'; clearPatchActive(); requestApply(); });
 nihongaSlider.addEventListener('input', () => { nihongaVal.textContent = nihongaSlider.value + '%'; clearPatchActive(); requestApply(); });
 monochromeCheckbox.addEventListener('change', () => applyResonantCurve());
 
 // ── Patch プリセット
 const PATCH_PROFILES = {
-  init:  { cutoff: 50, resonance: 15, waveform: 20, lfo: 10, envelope: 15, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0  }, // 初期化・控えめ
-  pad:   { cutoff: 65, resonance: 25, waveform: 10, lfo: 35, envelope: 25, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0  }, // 滑らかで広がる
-  acid:  { cutoff: 35, resonance: 80, waveform: 70, lfo: 15, envelope: 40, bitcrush: 35, flatten: 0,  outline: 0,  nihonga: 0  }, // うねる自己発振
-  drone: { cutoff: 55, resonance: 45, waveform: 15, lfo: 70, envelope: 60, bitcrush: 20, flatten: 0,  outline: 0,  nihonga: 0  }, // 持続的で瞑想的
-  ink:   { cutoff: 50, resonance: 10, waveform: 0,  lfo: 5,  envelope: 20, bitcrush: 0,  flatten: 65, outline: 55, nihonga: 40 }, // ベタ塗り＋太い輪郭線＋和の色調
+  init:  { cutoff: 50, resonance: 15, waveform: 20, lfo: 10, envelope: 15, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100 }, // 初期化・控えめ
+  pad:   { cutoff: 65, resonance: 25, waveform: 10, lfo: 35, envelope: 25, bitcrush: 0,  flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100 }, // 滑らかで広がる
+  acid:  { cutoff: 35, resonance: 80, waveform: 70, lfo: 15, envelope: 40, bitcrush: 35, flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100 }, // うねる自己発振
+  drone: { cutoff: 55, resonance: 45, waveform: 15, lfo: 70, envelope: 60, bitcrush: 20, flatten: 0,  outline: 0,  nihonga: 0,  inkTone: 100 }, // 持続的で瞑想的
+  ink:   { cutoff: 50, resonance: 10, waveform: 0,  lfo: 5,  envelope: 20, bitcrush: 0,  flatten: 65, outline: 55, nihonga: 40, inkTone: 60  }, // ベタ塗り＋太い輪郭線＋和の色調
 };
 
 patchBtns.forEach(btn => {
@@ -663,6 +672,7 @@ patchBtns.forEach(btn => {
     flattenSlider.value = p.flatten; flattenVal.textContent = p.flatten + '%';
     outlineSlider.value = p.outline; outlineVal.textContent = p.outline + '%';
     nihongaSlider.value = p.nihonga; nihongaVal.textContent = p.nihonga + '%';
+    inkToneSlider.value = p.inkTone; inkToneVal.textContent = p.inkTone + '%';
     patchBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     requestApply();
