@@ -137,6 +137,50 @@ function cloudNoise(x, y) {
 }
 
 // ── 簡易ボックスブラー（CUTOFF / RESONANCEのDoG生成に使用）
+// ── RGB空間でのk-meansクラスタリング（FLATTENが使う色そのものを絞り込むために使用）
+// パフォーマンスのため、全ピクセルではなくサンプリングした点だけで重心を求め、
+// 初期重心はサンプルを輝度順に並べて等間隔に選ぶ（乱数を使わず毎回同じ結果になるように）
+function kMeansColors(data, w, h, k) {
+  const totalPixels = w * h;
+  const sampleCount = Math.min(2000, totalPixels);
+  const step = Math.max(1, Math.floor(totalPixels / sampleCount));
+  const samples = [];
+  for (let p = 0; p < totalPixels; p += step) {
+    const i = p * 4;
+    samples.push([data[i], data[i+1], data[i+2]]);
+  }
+  samples.sort((a, b) => (a[0]*0.299+a[1]*0.587+a[2]*0.114) - (b[0]*0.299+b[1]*0.587+b[2]*0.114));
+
+  const centers = [];
+  for (let c = 0; c < k; c++) {
+    const idx = Math.min(samples.length - 1, Math.floor((c + 0.5) / k * samples.length));
+    centers.push(samples[idx].slice());
+  }
+
+  const iterations = 5;
+  for (let iter = 0; iter < iterations; iter++) {
+    const sums = centers.map(() => [0,0,0,0]); // r,g,b,count
+    for (let s = 0; s < samples.length; s++) {
+      const [r,g,b] = samples[s];
+      let bestIdx = 0, bestDist = Infinity;
+      for (let c = 0; c < centers.length; c++) {
+        const dr = r-centers[c][0], dg = g-centers[c][1], db = b-centers[c][2];
+        const dist = dr*dr + dg*dg + db*db;
+        if (dist < bestDist) { bestDist = dist; bestIdx = c; }
+      }
+      sums[bestIdx][0] += r; sums[bestIdx][1] += g; sums[bestIdx][2] += b; sums[bestIdx][3]++;
+    }
+    for (let c = 0; c < centers.length; c++) {
+      if (sums[c][3] > 0) {
+        centers[c][0] = sums[c][0] / sums[c][3];
+        centers[c][1] = sums[c][1] / sums[c][3];
+        centers[c][2] = sums[c][2] / sums[c][3];
+      }
+    }
+  }
+  return centers;
+}
+
 function boxBlur(data, w, h, radius) {
   if (radius < 1) return data.slice();
   const r = Math.max(1, Math.round(radius));
@@ -347,17 +391,24 @@ function applyResonantCurve(preview) {
     out = next;
   }
 
-  // ── FLATTEN：強めのぼかしで細部を馴染ませてから、色数を大胆に減らして色面の塊を作る（熊谷守一のベタ塗り的表現）
+  // ── FLATTEN：強めのぼかしで細部を馴染ませてから、画面全体の色をクラスタリングして
+  //    実際に使う色の種類そのものを絞り込む（チャンネル別の量子化だと理論上27色まで残ってしまうため、
+  //    RGB空間でのk-meansクラスタリングに変更。右に振り切ると本当に2〜3色のポスターのような絵になる）
   if (flatten > 0.01) {
-    const flattenRadius = flatten * 16 * Math.max(radiusScale, 0.35);
+    const flattenRadius = flatten * 22 * Math.max(radiusScale, 0.35);
     const blurred = boxBlur(out, w, h, flattenRadius);
-    const levels = Math.max(2, Math.round(9 - flatten * 6)); // 9段階〜3段階
-    const step = 255 / (levels - 1);
+    const k = Math.max(2, Math.round(20 - flatten * 18)); // 20色（控えめ）〜2色（究極にシンプル）
+    const centers = kMeansColors(blurred, w, h, k);
     const next = new Uint8ClampedArray(out.length);
-    for (let i = 0; i < out.length; i += 4) {
-      next[i]   = Math.round(blurred[i]   / step) * step;
-      next[i+1] = Math.round(blurred[i+1] / step) * step;
-      next[i+2] = Math.round(blurred[i+2] / step) * step;
+    for (let i = 0; i < blurred.length; i += 4) {
+      const r = blurred[i], g = blurred[i+1], b = blurred[i+2];
+      let bestIdx = 0, bestDist = Infinity;
+      for (let c = 0; c < centers.length; c++) {
+        const dr = r-centers[c][0], dg = g-centers[c][1], db = b-centers[c][2];
+        const dist = dr*dr + dg*dg + db*db;
+        if (dist < bestDist) { bestDist = dist; bestIdx = c; }
+      }
+      next[i] = centers[bestIdx][0]; next[i+1] = centers[bestIdx][1]; next[i+2] = centers[bestIdx][2];
       next[i+3] = out[i+3];
     }
     out = next;
